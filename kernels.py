@@ -108,5 +108,28 @@ def get_rays(
     return rays_o, rays_d
 
 
+# sample rays along their directions
+# use delta-tracking instead?
+def sample_rays(
+    rays_o: torch.Tensor,
+    rays_d: torch.Tensor,
+    near: float,
+    far: float,
+    num_samples: int
+):
+    t = torch.linspace(0, 1, num_samples + 1, device=rays_o.device)
+    t = near + (far - near) * t  # evenly spread in (near, far)
+    t_delta = t[1:] - t[:-1]  # len(t_delta) = len(t) - 1
+    t = t[:-1]  # neglect the last term(the starting point)
+    t_rand = torch.rand(num_samples, device=rays_o.device)
+    t = t + t_delta * t_rand
+    t = t.expand(list(rays_o.shape[:-1]) + [num_samples])
+    sample_positions = rays_o[..., None, :] + \
+        t[..., :, None] * rays_d[..., None, :]
+    return sample_positions, t  # (width, height, num_samples, 3)
+
+
 if __name__ == '__main__':
-    get_rays(10, 12, 10, torch.from_numpy(np.identity(4, dtype=np.float32)))
+    # get_rays(10, 12, 10, torch.from_numpy(np.identity(4, dtype=np.float32)))
+    print(sample_rays(torch.tensor([0, 1, 0]),
+          torch.tensor([1, 0, 1]), 0, 10, 10))
