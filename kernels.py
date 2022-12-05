@@ -137,24 +137,56 @@ def generate_any_batch(
     return [unbatched[i:i + batch_size] for i in range(0, inputs.shape[0], batch_size)]
 
 
-def generate_rays_o_batch(
-        rays_o: torch.Tensor,
-        position_encoding: Callable[[torch.Tensor], torch.Tensor],
-        batch_size: int
-) -> torch.Tensor:
-    rays_o = rays_o.reshape((-1, 3))  # flatten the first two dim
-    rays_o = position_encoding(rays_o)
-    return generate_any_batch(rays_o, batch_size)
-
-
-def generate_rays_d_batch(
+def generate_batches(
+        sample_positions: torch.Tensor,
         rays_d: torch.Tensor,
+        position_encoding: Callable[[torch.Tensor], torch.Tensor],
         direction_encoding: Callable[[torch.Tensor], torch.Tensor],
         batch_size: int
 ) -> torch.Tensor:
+    # normalize direction
+    rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+    rays_d = rays_d[:, None, ...].expand(
+        sample_positions.shape)
     rays_d = rays_d.reshape((-1, 3))  # flatten the first two dim
     rays_d = direction_encoding(rays_d)
-    return generate_any_batch(rays_d, batch_size)
+    rays_d = generate_any_batch(rays_d, batch_size)
+
+    sample_positions = sample_positions.reshape((-1, 3))
+    sample_positions = position_encoding(sample_positions)
+    sample_positions = generate_any_batch(sample_positions, batch_size)
+    return sample_positions, rays_d
+
+
+def add_zero(tensor: torch.Tensor, front=True) -> torch.Tensor:
+    tensor_zero, = torch.zeros(list(tensor.shape[:-1]) + [1])
+    if front:
+        tensor = torch.cat((tensor_zero, tensor), dim=-1)
+    else:
+        tensor = torch.cat((tensor, tensor_zero), dim=-1)
+    return tensor
+
+
+def render(
+    # output from network
+    results: torch.Tensor,  # (width, height, num_samples, 4)
+    rays_d: torch.Tensor,  # direction of the ray: (width, height, 3)
+    t: torch.Tensor,  # t on the ray's direction (width, height, num_samples)
+) -> Tuple[torch.Tensor]:
+    # delta_{i} = t_{i+1} - t_{i}
+    delta = t[..., 1:] - t[..., :-1]  # len(t_delta) = len(t) - 1
+    T = results[..., 1:, 3] * delta
+    # add zero before
+    T = add_zero(T, front=True)
+    T = torch.cumsum(T, dim=-1)
+    T = torch.exp(-T)  # (width, height)
+
+    delta = add_zero(delta, front=False)
+    weights = T * (1 - torch.exp(-results[..., 3] * delta))
+    rgb = results[..., :3] * weights
+    rgb = torch.sum(rgb, dim=-1)
+
+    return rgb, weights
 
 
 def nerf_forward(
@@ -178,12 +210,26 @@ def nerf_forward(
         rays_o, rays_d, near, far, num_samples_coarse)
 
     # Second, group input into batches
-    rays_o_batch = generate_rays_o_batch(
-        rays_o, position_encoding_network.forward, batch_size)
-    rays_d_batch = generate_rays_d_batch(
-        rays_d, direction_encoding_network.forward, batch_size)
+    # again, sample_positions: (width, height, num_samples, 3)
+    sample_positions_batches, rays_d_batches = generate_batches(
+        sample_positions, rays_d,
+        position_encoding=position_encoding_network, direction_encoding=direction_encoding_network,
+        batch_size=batch_size)
 
-    pass
+    # Third, pass through the coarse network
+    coarse_results = []
+    for sample_positions_batch, rays_d_batch in zip(sample_positions_batches, rays_d_batches):
+        coarse_result = coarse_network(sample_positions_batch, rays_d_batch)
+        coarse_results.append(coarse_result)
+
+    # results in coarse_results: [(batch_size, 4) ...] # RGB,
+    coarse_results = torch.cat(coarse_results, dim=0)  # (all_samples, 4)
+    coarse_results = coarse_results.reshape(
+        list(sample_positions.shape[:2]) + [coarse_results.shape[-1]])
+
+    coarse_rgb, coarse_weights = render(coarse_results, rays_d, t)
+
+    return coarse_rgb
 
 
 if __name__ == '__main__':
