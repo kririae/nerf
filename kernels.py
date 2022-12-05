@@ -53,9 +53,9 @@ class NeRF(nn.Module):
         self.output = nn.Linear(dim_fully_connected // 2, 3)  # RGB
 
     def forward(
-        self,
-        x: torch.Tensor,
-        d: torch.Tensor
+            self,
+            x: torch.Tensor,
+            d: torch.Tensor
     ) -> torch.Tensor:
         original_x = x
         for index, linear in enumerate(self.linears):
@@ -86,7 +86,8 @@ def get_rays(
         height: int,
         width: int,
         focal: float,
-        transform_matrix: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        transform_matrix: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
     i, j = torch.meshgrid(
         torch.arange(width, dtype=torch.float32).to(transform_matrix),
         torch.arange(height, dtype=torch.float32).to(transform_matrix),
@@ -111,12 +112,12 @@ def get_rays(
 # sample rays along their directions
 # use delta-tracking instead?
 def sample_rays(
-    rays_o: torch.Tensor,
-    rays_d: torch.Tensor,
-    near: float,
-    far: float,
-    num_samples: int
-):
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        near: float,
+        far: float,
+        num_samples: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
     t = torch.linspace(0, 1, num_samples + 1, device=rays_o.device)
     t = near + (far - near) * t  # evenly spread in (near, far)
     t_delta = t[1:] - t[:-1]  # len(t_delta) = len(t) - 1
@@ -127,6 +128,62 @@ def sample_rays(
     sample_positions = rays_o[..., None, :] + \
         t[..., :, None] * rays_d[..., None, :]
     return sample_positions, t  # (width, height, num_samples, 3)
+
+
+def generate_any_batch(
+    unbatched: torch.Tensor,
+    batch_size: int
+) -> torch.Tensor:
+    return [unbatched[i:i + batch_size] for i in range(0, inputs.shape[0], batch_size)]
+
+
+def generate_rays_o_batch(
+        rays_o: torch.Tensor,
+        position_encoding: Callable[[torch.Tensor], torch.Tensor],
+        batch_size: int
+) -> torch.Tensor:
+    rays_o = rays_o.reshape((-1, 3))  # flatten the first two dim
+    rays_o = position_encoding(rays_o)
+    return generate_any_batch(rays_o, batch_size)
+
+
+def generate_rays_d_batch(
+        rays_d: torch.Tensor,
+        direction_encoding: Callable[[torch.Tensor], torch.Tensor],
+        batch_size: int
+) -> torch.Tensor:
+    rays_d = rays_d.reshape((-1, 3))  # flatten the first two dim
+    rays_d = direction_encoding(rays_d)
+    return generate_any_batch(rays_d, batch_size)
+
+
+def nerf_forward(
+    # Basic information
+    rays_o: torch.Tensor,
+    rays_d: torch.Tensor,
+    near: float,
+    far: float,
+    batch_size: int,
+    # Hierarchical volume sampling
+    num_samples_coarse: int,
+    num_samples_fine: int,
+    coarse_network: nn.Module,
+    fine_network: nn.Module,
+    # encoding model
+    position_encoding_network: nn.Module,
+    direction_encoding_network: nn.Module,
+) -> torch.Tensor:
+    # First, sample some points along the ray for coarse model
+    sample_positions, t = sample_rays(
+        rays_o, rays_d, near, far, num_samples_coarse)
+
+    # Second, group input into batches
+    rays_o_batch = generate_rays_o_batch(
+        rays_o, position_encoding_network.forward, batch_size)
+    rays_d_batch = generate_rays_d_batch(
+        rays_d, direction_encoding_network.forward, batch_size)
+
+    pass
 
 
 if __name__ == '__main__':
