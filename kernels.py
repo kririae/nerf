@@ -9,6 +9,7 @@ from typing import *
 class Gamma(nn.Module):
     # γ(\mathbb{R}) -> (sin(2^{0..L-1}*\pi*p), cos(2^{0..L-1}*\pi*p))
     def __init__(self, L: int):
+        super(Gamma, self).__init__()
         self.L = L
 
     def forward(
@@ -17,7 +18,7 @@ class Gamma(nn.Module):
     ) -> torch.Tensor:
         # lst: (2*L, batch_size, x_dim)
         lst = []
-        for i in range(L):
+        for i in range(self.L):
             lst.append(torch.sin(2**i * x))
             lst.append(torch.cos(2**i * x))
         return torch.cat(lst, dim=-1)  # (batch_size, 2*L*x_dim)
@@ -44,13 +45,15 @@ class NeRF(nn.Module):
             [nn.Linear(dim_position, dim_fully_connected)]  # entry
             + [nn.Linear(dim_position + dim_fully_connected, dim_fully_connected) if i in cat_position_index
                else nn.Linear(dim_fully_connected, dim_fully_connected)
-               for i in num_linear_layers])
+               for i in range(num_linear_layers)])
 
         # implement tail layers
         self.alpha_output = nn.Linear(dim_fully_connected, 1)
         self.cat_direction = nn.Linear(
             dim_direction + dim_fully_connected, dim_fully_connected // 2)
         self.output = nn.Linear(dim_fully_connected // 2, 3)  # RGB
+
+        self.cat_position_index = cat_position_index
 
     def forward(
             self,
@@ -63,7 +66,7 @@ class NeRF(nn.Module):
             x = nn.functional.relu(x)
 
             # index is shifted because of the `entry`
-            if index in cat_position_index:
+            if index in self.cat_position_index:
                 # dim=-1: vector is presented in column
                 x = torch.cat([original_x, x], dim=-1)
 
@@ -95,22 +98,23 @@ def get_rays(
     # to height, width
     i, j = i.transpose(-1, -2), j.transpose(-1, -2)
     directions = torch.stack(
-        [i - width / 2, -(j - height / 2), -torch.ones_like(i), torch.zeros_like(i)], dim=-1)
-    directions[:, :, :2] /= focal
-
+        [(i - width / 2) / focal, -(j - height / 2) / focal, -torch.ones_like(i), torch.zeros_like(i)], dim=-1)
     rays_d = directions @ transform_matrix.mT
-    rays_o = transform_matrix @ torch.tensor(
-        [0, 0, 0, 1], dtype=torch.float32).mT
+    rays_o = torch.tensor(
+        [0, 0, 0, 1], dtype=torch.float32).to(transform_matrix) @ transform_matrix.mT
 
     # normalize homogeneous coordinate
+    rays_o = rays_o[:3] / rays_o[3]
     rays_d = rays_d[:, :, :3]
-    rays_o = (rays_o[:3] / rays_o[3]).expand(rays_d.shape)
+    rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+    rays_o = rays_o.expand(rays_d.shape)
 
     return rays_o, rays_d
 
-
 # sample rays along their directions
 # use delta-tracking instead?
+
+
 def sample_rays(
         rays_o: torch.Tensor,
         rays_d: torch.Tensor,
@@ -134,7 +138,7 @@ def generate_any_batch(
     unbatched: torch.Tensor,
     batch_size: int
 ) -> torch.Tensor:
-    return [unbatched[i:i + batch_size] for i in range(0, inputs.shape[0], batch_size)]
+    return [unbatched[i:i + batch_size] for i in range(0, unbatched.shape[0], batch_size)]
 
 
 def generate_batches(
@@ -145,9 +149,7 @@ def generate_batches(
         batch_size: int
 ) -> torch.Tensor:
     # normalize direction
-    rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
-    rays_d = rays_d[:, None, ...].expand(
-        sample_positions.shape)
+    rays_d = rays_d[:, None, ...].expand(sample_positions.shape)
     rays_d = rays_d.reshape((-1, 3))  # flatten the first two dim
     rays_d = direction_encoding(rays_d)
     rays_d = generate_any_batch(rays_d, batch_size)
@@ -159,7 +161,7 @@ def generate_batches(
 
 
 def add_zero(tensor: torch.Tensor, front=True) -> torch.Tensor:
-    tensor_zero, = torch.zeros(list(tensor.shape[:-1]) + [1])
+    tensor_zero = torch.zeros(list(tensor.shape[:-1]) + [1]).to(tensor)
     if front:
         tensor = torch.cat((tensor_zero, tensor), dim=-1)
     else:
@@ -183,8 +185,8 @@ def render(
 
     delta = add_zero(delta, front=False)
     weights = T * (1 - torch.exp(-results[..., 3] * delta))
-    rgb = results[..., :3] * weights
-    rgb = torch.sum(rgb, dim=-1)
+    rgb = results[..., :3] * weights[..., None]
+    rgb = torch.sum(rgb, dim=-2)
 
     return rgb, weights
 
@@ -227,7 +229,7 @@ def nerf_forward(
     coarse_results = coarse_results.reshape(
         list(sample_positions.shape[:2]) + [coarse_results.shape[-1]])
 
-    coarse_rgb, coarse_weights = render(coarse_results, rays_d, t)
+    coarse_rgb, weights = render(coarse_results, rays_d, t)
 
     return coarse_rgb
 
@@ -235,4 +237,4 @@ def nerf_forward(
 if __name__ == '__main__':
     # get_rays(10, 12, 10, torch.from_numpy(np.identity(4, dtype=np.float32)))
     print(sample_rays(torch.tensor([0, 1, 0]),
-          torch.tensor([1, 0, 1]), 0, 10, 10))
+          torch.tensor([1, 0, 1]), 2, 10, 10))

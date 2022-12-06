@@ -53,6 +53,15 @@ def load_file(filename: Path):
     return images, transforms, focal
 
 
+def load_npz(filename: Path):
+    data = np.load(filename)
+    images = data['images']
+    transforms = data['poses']
+    focal = float(data['focal'])
+
+    return images, transforms, focal
+
+
 def display_rays(
     rays_o: np.ndarray,
     rays_d: np.ndarray
@@ -82,17 +91,31 @@ def display_cameras(filename: Path):
     display_rays(origins, dirs)
 
 
-def test_get_rays(filename: Path):
-    images, transforms, focal = load_file(filename)
+def display_cameras_npz():
+    images, transforms, _ = load_npz('data/tiny_nerf_data.npz')
+    origins = transforms @ np.array([0, 0, 0, 1]).T
+    dirs = transforms @ np.array([0, 0, -1, 0]).T
+    display_rays(origins, dirs)
+
+
+def test_get_rays():
+    images, transforms, focal = load_npz('data/tiny_nerf_data.npz')
     assert len(images) > 0
 
-    image = images[0]
-    transform_matrix = torch.from_numpy(transforms[0])
+    image = images[101]
+    transform_matrix = torch.from_numpy(transforms[101])
     height, width, _ = image.shape
-    rays_d, rays_o = kernels.get_rays(height, width, focal, transform_matrix)
+    with torch.no_grad():
+        rays_o, rays_d = kernels.get_rays(
+            height, width, focal, transform_matrix)
+    print(rays_o[height // 2, width // 2, :])
+    print(rays_d[height // 2, width // 2, :])
+
+    display_rays(rays_o, rays_d)
 
 
 if __name__ == '__main__':
     # load file test
     # display_cameras('data/nerf_synthetic/lego/transforms_train.json')
-    test_get_rays('data/nerf_synthetic/lego/transforms_train.json')
+    # test_get_rays()
+    display_cameras_npz()
