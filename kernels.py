@@ -134,6 +134,39 @@ def sample_rays(
     return sample_positions, t  # (width, height, num_samples, 3)
 
 
+def rand_sorted(low: float, up: float, num_samples: int, device) -> torch.Tensor:
+    return torch.linspace(low, up, num_samples, device=device)
+
+
+def weighted_sample_rays(
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        weights: torch.Tensor,
+        original_t: torch.Tensor,
+        num_samples: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    # the last term of weights is zero
+    weights = nn.functional.relu(weights)
+    pdf = (weights + 1e-5) / (torch.sum(weights, dim=-1, keepdim=True) + 1e-5)
+    cdf = torch.cumsum(pdf, dim=-1)
+
+    rand = rand_sorted(1e-5, 1 - 1e-5, num_samples, device=cdf.device)
+    rand = rand.expand(list(cdf.shape[:-1]) + [num_samples])
+    # rand = torch.rand(list(cdf.shape[:-1]) + [num_samples], device=cdf.device)
+    rand = rand.contiguous()
+    indices = torch.searchsorted(cdf, rand)  # (..., num_samples)
+
+    # sample the corresponding t
+    delta_original_t = original_t[..., 1:] - original_t[..., :-1]
+    start_t = torch.gather(original_t, dim=-1, index=indices)
+    delta_t = torch.gather(delta_original_t, dim=-1, index=indices)
+    t = start_t + delta_t * rand
+
+    weighted_sample_positions = rays_o[..., None, :] + \
+        t[..., :, None] * rays_d[..., None, :]
+    return weighted_sample_positions, t
+
+
 def generate_any_batch(
     unbatched: torch.Tensor,
     batch_size: int
@@ -231,10 +264,16 @@ def nerf_forward(
 
     coarse_rgb, weights = render(coarse_results, rays_d, t)
 
+    # perform weighted sample
+    weighted_sample_positions, weighted_t = weighted_sample_rays(
+        rays_o, rays_d, weights, t, num_samples_fine)
+
     return coarse_rgb
 
 
 if __name__ == '__main__':
     # get_rays(10, 12, 10, torch.from_numpy(np.identity(4, dtype=np.float32)))
-    print(sample_rays(torch.tensor([0, 1, 0]),
-          torch.tensor([1, 0, 1]), 2, 10, 10))
+    # print(sample_rays(torch.tensor([0, 1, 0]),
+    #       torch.tensor([1, 0, 1]), 2, 10, 10))
+    weighted_sample_rays(None, None, torch.tensor(
+        [1, 5, 2, 0], dtype=torch.float32), torch.tensor([0, 1, 2, 3]), 80)

@@ -24,13 +24,20 @@ dim_fully_connected = 256
 cat_position_index = [4]
 near = 2
 far = 6
-num_samples_coarse = 32
+num_samples_coarse = 16
+num_samples_fine = 32
 
 # training parameters
 num_iters = 10000
 batch_size = 2**10
 lr = 5e-4
 coarse_NeRF: nn.Module = NeRF(
+    dim_position=dim_position,
+    dim_direction=dim_direction,
+    num_linear_layers=num_linear_layers,
+    dim_fully_connected=dim_fully_connected,
+    cat_position_index=cat_position_index).to(device)
+fine_NeRF: nn.Module = NeRF(
     dim_position=dim_position,
     dim_direction=dim_direction,
     num_linear_layers=num_linear_layers,
@@ -55,6 +62,7 @@ save_steps = 1000
 
 
 def train():
+    torch.autograd.set_detect_anomaly(True)
     if coarse_NeRF_model_filename.exists():
         coarse_NeRF.load_state_dict(torch.load(coarse_NeRF_model_filename))
         coarse_NeRF.eval()
@@ -91,7 +99,7 @@ def train():
             far=far,
             batch_size=batch_size,
             num_samples_coarse=num_samples_coarse,
-            num_samples_fine=None,
+            num_samples_fine=num_samples_fine,
             coarse_network=coarse_NeRF,
             fine_network=None,
             position_encoding_network=position_encoding_network,
@@ -121,9 +129,9 @@ def train():
                 far=far,
                 batch_size=batch_size,
                 num_samples_coarse=num_samples_coarse,
-                num_samples_fine=None,
+                num_samples_fine=num_samples_fine,
                 coarse_network=coarse_NeRF,
-                fine_network=None,
+                fine_network=fine_NeRF,
                 position_encoding_network=position_encoding_network,
                 direction_encoding_network=direction_encoding_network)
 
