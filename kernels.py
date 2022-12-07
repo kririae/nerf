@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from typing import *
+import matplotlib.pyplot as plt
 
 
 class Gamma(nn.Module):
@@ -109,10 +110,21 @@ def get_rays(
     rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
     rays_o = rays_o.expand(rays_d.shape)
 
+    # flatten the results
+    rays_o = rays_o.reshape((-1, 3))
+    rays_d = rays_d.reshape((-1, 3))
+
     return rays_o, rays_d
 
-# sample rays along their directions
-# use delta-tracking instead?
+
+def rand_sorted(near: float, far: float, num_samples: int, device) -> torch.Tensor:
+    t = torch.linspace(0, 1, num_samples + 1, device=device)
+    t = near + (far - near) * t  # evenly spread in (near, far)
+    t_delta = t[1:] - t[:-1]  # len(t_delta) = len(t) - 1
+    t = t[:-1]  # neglect the last term(the starting point)
+    t_rand = torch.rand(num_samples, device=device)
+    t = t + t_delta * t_rand
+    return t
 
 
 def sample_rays(
@@ -122,45 +134,53 @@ def sample_rays(
         far: float,
         num_samples: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    t = torch.linspace(0, 1, num_samples + 1, device=rays_o.device)
-    t = near + (far - near) * t  # evenly spread in (near, far)
-    t_delta = t[1:] - t[:-1]  # len(t_delta) = len(t) - 1
-    t = t[:-1]  # neglect the last term(the starting point)
-    t_rand = torch.rand(num_samples, device=rays_o.device)
-    t = t + t_delta * t_rand
+    # sample rays along their directions
+    # use delta-tracking instead?
+    t = rand_sorted(near, far, num_samples, device=rays_o.device)
     t = t.expand(list(rays_o.shape[:-1]) + [num_samples])
     sample_positions = rays_o[..., None, :] + \
         t[..., :, None] * rays_d[..., None, :]
-    return sample_positions, t  # (width, height, num_samples, 3)
+    return sample_positions, t  # (num_rays, num_samples, 3)
 
 
-def rand_sorted(low: float, up: float, num_samples: int, device) -> torch.Tensor:
-    return torch.linspace(low, up, num_samples, device=device)
+def visualize_samples(samples: torch.Tensor) -> None:
+    y = torch.zeros_like(samples)
+    plt.plot(samples.cpu().numpy(),
+             1 + y.cpu().numpy(), 'b-o')
+    plt.ylim([0, 2])
+    plt.grid(True)
+    plt.show()
 
 
 def weighted_sample_rays(
-        rays_o: torch.Tensor,
-        rays_d: torch.Tensor,
-        weights: torch.Tensor,
-        original_t: torch.Tensor,
+        rays_o: torch.Tensor,  # (num_rays, 3)
+        rays_d: torch.Tensor,  # (num_rays, 3)
+        weights: torch.Tensor,  # (num_rays, num_previous_samples)
+        original_t: torch.Tensor,  # (num_rays, num_previous_samples)
         num_samples: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # the last term of weights is zero
     weights = nn.functional.relu(weights)
     pdf = (weights + 1e-5) / (torch.sum(weights, dim=-1, keepdim=True) + 1e-5)
-    cdf = torch.cumsum(pdf, dim=-1)
+    cdf = torch.cumsum(pdf, dim=-1)  # (num_rays, num_previous_samples)
 
-    rand = rand_sorted(1e-5, 1 - 1e-5, num_samples, device=cdf.device)
+    rand = rand_sorted(0, 1, num_samples, device=cdf.device)
     rand = rand.expand(list(cdf.shape[:-1]) + [num_samples])
-    # rand = torch.rand(list(cdf.shape[:-1]) + [num_samples], device=cdf.device)
+    cdf = cdf.contiguous()
     rand = rand.contiguous()
-    indices = torch.searchsorted(cdf, rand)  # (..., num_samples)
+    indices = torch.searchsorted(cdf, rand)  # (num_rays, num_samples)
+
+    with torch.no_grad():
+        indices_max, _ = torch.max(indices, dim=-1)
+        indices_max = torch.max(indices_max)
+        assert indices_max < weights.shape[-1] - 1
 
     # sample the corresponding t
     delta_original_t = original_t[..., 1:] - original_t[..., :-1]
     start_t = torch.gather(original_t, dim=-1, index=indices)
     delta_t = torch.gather(delta_original_t, dim=-1, index=indices)
-    t = start_t + delta_t * rand
+    t = start_t + delta_t * torch.rand(delta_t.shape, device=delta_t.device)
+    t, _ = torch.sort(t, dim=-1)
 
     weighted_sample_positions = rays_o[..., None, :] + \
         t[..., :, None] * rays_d[..., None, :]
@@ -224,6 +244,40 @@ def render(
     return rgb, weights
 
 
+def render_with_samples(
+    # Basic information
+    rays_o: torch.Tensor,  # (num_rays, 3)
+    rays_d: torch.Tensor,  # (num_rays, 3)
+    batch_size: int,
+    # Sampled information
+    sample_positions: torch.Tensor,  # (num_rays, num_samples, 3)
+    t: torch.Tensor,  # (num_rays, num_samples)
+    # Encoding model
+    network: nn.Module,
+    position_encoding_network: nn.Module,
+    direction_encoding_network: nn.Module,
+):
+    sample_positions_batches, rays_d_batches = generate_batches(
+        sample_positions, rays_d,
+        position_encoding=position_encoding_network, direction_encoding=direction_encoding_network,
+        batch_size=batch_size)
+
+    # pass through the network
+    results = []
+    for sample_positions_batch, rays_d_batch in zip(sample_positions_batches, rays_d_batches):
+        result = network(sample_positions_batch, rays_d_batch)
+        results.append(result)
+
+    # results in coarse_results: [(batch_size, 4) ...] # RGB,
+    results = torch.cat(results, dim=0)  # (all_samples, 4)
+    results = results.reshape(
+        list(sample_positions.shape[:2]) + [results.shape[-1]])
+
+    rgb, weights = render(results, rays_d, t)
+
+    return rgb, weights
+
+
 def nerf_forward(
     # Basic information
     rays_o: torch.Tensor,
@@ -244,49 +298,15 @@ def nerf_forward(
     sample_positions, t = sample_rays(
         rays_o, rays_d, near, far, num_samples_coarse)
 
-    # Second, group input into batches
-    # again, sample_positions: (width, height, num_samples, 3)
-    sample_positions_batches, rays_d_batches = generate_batches(
-        sample_positions, rays_d,
-        position_encoding=position_encoding_network, direction_encoding=direction_encoding_network,
-        batch_size=batch_size)
+    coarse_rgb, weights = render_with_samples(
+        rays_o, rays_d, batch_size, sample_positions, t, coarse_network, position_encoding_network, direction_encoding_network)
 
-    # Third, pass through the coarse network
-    coarse_results = []
-    for sample_positions_batch, rays_d_batch in zip(sample_positions_batches, rays_d_batches):
-        coarse_result = coarse_network(sample_positions_batch, rays_d_batch)
-        coarse_results.append(coarse_result)
-
-    # results in coarse_results: [(batch_size, 4) ...] # RGB,
-    coarse_results = torch.cat(coarse_results, dim=0)  # (all_samples, 4)
-    coarse_results = coarse_results.reshape(
-        list(sample_positions.shape[:2]) + [coarse_results.shape[-1]])
-
-    coarse_rgb, weights = render(coarse_results, rays_d, t)
-
-    del sample_positions
-    del coarse_results
-    del sample_positions_batches
-    del rays_d_batches
-    del coarse_rgb
-
-    # perform weighted sample
+    # Then, perform weighted sample
     weighted_sample_positions, weighted_t = weighted_sample_rays(
         rays_o, rays_d, weights, t, num_samples_fine)
 
-    weighted_sample_positions_batches, weighted_rays_d_batches = generate_batches(
-        weighted_sample_positions, rays_d,
-        position_encoding=position_encoding_network, direction_encoding=direction_encoding_network, batch_size=batch_size)
-
-    fine_results = []
-    for sample_positions_batch, rays_d_batch in zip(weighted_sample_positions_batches, weighted_rays_d_batches):
-        fine_result = fine_network(sample_positions_batch, rays_d_batch)
-        fine_results.append(fine_result)
-    fine_results = torch.cat(fine_results, dim=0)  # (all_samples, 4)
-    fine_results = fine_results.reshape(
-        list(weighted_sample_positions.shape[:2]) + [fine_results.shape[-1]])
-
-    fine_rgb, weights = render(fine_results, rays_d, weighted_t)
+    fine_rgb, weights = render_with_samples(
+        rays_o, rays_d, batch_size, weighted_sample_positions, weighted_t, fine_network, position_encoding_network, direction_encoding_network)
 
     return fine_rgb
 

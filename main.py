@@ -24,13 +24,15 @@ dim_fully_connected = 256
 cat_position_index = [4]
 near = 2
 far = 6
-num_samples_coarse = 16
+num_samples_coarse = 8
 num_samples_fine = 32
 
 # training parameters
 num_iters = 10000
-batch_size = 2**10
+batch_size = 2**14
 lr = 5e-4
+
+# networks
 coarse_NeRF: nn.Module = NeRF(
     dim_position=dim_position,
     dim_direction=dim_direction,
@@ -45,9 +47,13 @@ fine_NeRF: nn.Module = NeRF(
     cat_position_index=cat_position_index).to(device)
 position_encoding_network = Gamma(L=position_L).to(device)
 direction_encoding_network = Gamma(L=direction_L).to(device)
-coarse_NeRF_params = coarse_NeRF.parameters()
 
-optimizer = torch.optim.Adam(coarse_NeRF_params, lr=lr)
+# optimizing parameters
+coarse_NeRF_params = coarse_NeRF.parameters()
+fine_NeRF_params = fine_NeRF.parameters()
+parameters = list(coarse_NeRF_params) + list(fine_NeRF_params)
+
+optimizer = torch.optim.Adam(parameters, lr=lr)
 
 train_transform_filename = Path(
     'data/nerf_synthetic/lego/transforms_train.json')
@@ -56,16 +62,20 @@ test_transform_filename = Path(
 val_transform_filename = Path(
     'data/nerf_synthetic/lego/transforms_val.json')
 coarse_NeRF_model_filename = Path('data/coarse_NeRF.pt')
+fine_NeRF_model_filename = Path('data/fine_NeRF.pt')
 
 display_steps = 50
 save_steps = 1000
 
 
 def train():
-    torch.autograd.set_detect_anomaly(True)
     if coarse_NeRF_model_filename.exists():
         coarse_NeRF.load_state_dict(torch.load(coarse_NeRF_model_filename))
         coarse_NeRF.eval()
+
+    if fine_NeRF_model_filename.exists():
+        fine_NeRF.load_state_dict(torch.load(fine_NeRF_model_filename))
+        fine_NeRF.eval()
 
     # images, transforms, focal = load_file(train_transform_filename)
     images, transforms, focal = load_npz('data/tiny_nerf_data.npz')
@@ -79,6 +89,7 @@ def train():
 
     for i in trange(num_iters):
         coarse_NeRF.train()
+        fine_NeRF.train()
 
         # randomly select any image
         images_index = np.random.randint(images.shape[0])
@@ -88,8 +99,6 @@ def train():
 
         # spawn ray to image-plane
         rays_o, rays_d = get_rays(height, width, focal, transform_matrix)
-        rays_o = rays_o.reshape((-1, 3))
-        rays_d = rays_d.reshape((-1, 3))
 
         # predicted rgb
         rgb: torch.Tensor = nerf_forward(
@@ -117,11 +126,11 @@ def train():
 
         if i % display_steps == 0:
             coarse_NeRF.eval()
+            fine_NeRF.eval()
 
             test_rays_o, test_rays_d = get_rays(
                 height, width, focal, test_transform_matrix)
-            test_rays_o = test_rays_o.reshape((-1, 3))
-            test_rays_d = test_rays_d.reshape((-1, 3))
+
             test_rgb: torch.Tensor = nerf_forward(
                 rays_o=test_rays_o,
                 rays_d=test_rays_d,
@@ -140,12 +149,15 @@ def train():
                 (height, width, 3)).detach().cpu().numpy())
             ax[1].imshow(test_image.detach().cpu().numpy())
             plt.savefig('data/output.png')
+
         if i % 1000 == 0:
             print('model saved')
             torch.save(coarse_NeRF.state_dict(), coarse_NeRF_model_filename)
+            torch.save(fine_NeRF.state_dict(), fine_NeRF_model_filename)
 
     print('model saved')
     torch.save(coarse_NeRF.state_dict(), coarse_NeRF_model_filename)
+    torch.save(fine_NeRF.state_dict(), fine_NeRF_model_filename)
 
 
 def main():
