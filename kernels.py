@@ -264,11 +264,31 @@ def nerf_forward(
 
     coarse_rgb, weights = render(coarse_results, rays_d, t)
 
+    del sample_positions
+    del coarse_results
+    del sample_positions_batches
+    del rays_d_batches
+    del coarse_rgb
+
     # perform weighted sample
     weighted_sample_positions, weighted_t = weighted_sample_rays(
         rays_o, rays_d, weights, t, num_samples_fine)
 
-    return coarse_rgb
+    weighted_sample_positions_batches, weighted_rays_d_batches = generate_batches(
+        weighted_sample_positions, rays_d,
+        position_encoding=position_encoding_network, direction_encoding=direction_encoding_network, batch_size=batch_size)
+
+    fine_results = []
+    for sample_positions_batch, rays_d_batch in zip(weighted_sample_positions_batches, weighted_rays_d_batches):
+        fine_result = fine_network(sample_positions_batch, rays_d_batch)
+        fine_results.append(fine_result)
+    fine_results = torch.cat(fine_results, dim=0)  # (all_samples, 4)
+    fine_results = fine_results.reshape(
+        list(weighted_sample_positions.shape[:2]) + [fine_results.shape[-1]])
+
+    fine_rgb, weights = render(fine_results, rays_d, weighted_t)
+
+    return fine_rgb
 
 
 if __name__ == '__main__':

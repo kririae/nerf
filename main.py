@@ -101,7 +101,7 @@ def train():
             num_samples_coarse=num_samples_coarse,
             num_samples_fine=num_samples_fine,
             coarse_network=coarse_NeRF,
-            fine_network=None,
+            fine_network=fine_NeRF,
             position_encoding_network=position_encoding_network,
             direction_encoding_network=direction_encoding_network)
 
