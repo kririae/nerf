@@ -25,7 +25,7 @@ cat_position_index = [4]
 near = 2
 far = 6
 num_samples_coarse = 8
-num_samples_fine = 32
+num_samples_fine = 16
 
 # training parameters
 num_iters = 10000

@@ -160,8 +160,8 @@ def weighted_sample_rays(
         num_samples: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # the last term of weights is zero
-    weights = nn.functional.relu(weights)
-    pdf = (weights + 1e-5) / (torch.sum(weights, dim=-1, keepdim=True) + 1e-5)
+    weights = nn.functional.relu(weights) + 1e-2
+    pdf = (weights) / (torch.sum(weights, dim=-1, keepdim=True))
     cdf = torch.cumsum(pdf, dim=-1)  # (num_rays, num_previous_samples)
 
     rand = rand_sorted(0, 1, num_samples, device=cdf.device)
@@ -180,7 +180,11 @@ def weighted_sample_rays(
     start_t = torch.gather(original_t, dim=-1, index=indices)
     delta_t = torch.gather(delta_original_t, dim=-1, index=indices)
     t = start_t + delta_t * torch.rand(delta_t.shape, device=delta_t.device)
-    t, _ = torch.sort(t, dim=-1)
+
+    if torch.isnan(t).any():
+        print('!!! nan in t')
+    if torch.isinf(t).any():
+        print('!!! inf in t')
 
     weighted_sample_positions = rays_o[..., None, :] + \
         t[..., :, None] * rays_d[..., None, :]
@@ -224,9 +228,9 @@ def add_zero(tensor: torch.Tensor, front=True) -> torch.Tensor:
 
 def render(
     # output from network
-    results: torch.Tensor,  # (width, height, num_samples, 4)
-    rays_d: torch.Tensor,  # direction of the ray: (width, height, 3)
-    t: torch.Tensor,  # t on the ray's direction (width, height, num_samples)
+    results: torch.Tensor,  # (num_rays, num_samples, 4)
+    rays_d: torch.Tensor,  # direction of the ray: (num_rays, 3)
+    t: torch.Tensor,  # t on the ray's direction (num_rays, num_samples)
 ) -> Tuple[torch.Tensor]:
     # delta_{i} = t_{i+1} - t_{i}
     delta = t[..., 1:] - t[..., :-1]  # len(t_delta) = len(t) - 1
