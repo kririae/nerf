@@ -144,6 +144,7 @@ def sample_rays(
 
 
 def visualize_samples(samples: torch.Tensor) -> None:
+    print(samples)
     y = torch.zeros_like(samples)
     plt.plot(samples.cpu().numpy(),
              1 + y.cpu().numpy(), 'b-o')
@@ -155,31 +156,38 @@ def visualize_samples(samples: torch.Tensor) -> None:
 def weighted_sample_rays(
         rays_o: torch.Tensor,  # (num_rays, 3)
         rays_d: torch.Tensor,  # (num_rays, 3)
-        weights: torch.Tensor,  # (num_rays, num_previous_samples)
+        weights: torch.Tensor,  # (num_rays, num_previous_samples - 1)
         original_t: torch.Tensor,  # (num_rays, num_previous_samples)
         num_samples: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    num_samples += original_t.shape[-1]
+
     # the last term of weights is zero
     weights = nn.functional.relu(weights) + 1e-2
     pdf = (weights) / (torch.sum(weights, dim=-1, keepdim=True))
     cdf = torch.cumsum(pdf, dim=-1)  # (num_rays, num_previous_samples)
+    cdf = add_zero(cdf, front=True)
 
-    rand = rand_sorted(0, 1, num_samples, device=cdf.device)
+    # rand = rand_sorted(0, 1, num_samples, device=cdf.device)
+    rand = torch.linspace(1e-4, 1 - 1e-4, num_samples, device=cdf.device)
     rand = rand.expand(list(cdf.shape[:-1]) + [num_samples])
+
     cdf = cdf.contiguous()
     rand = rand.contiguous()
-    indices = torch.searchsorted(cdf, rand)  # (num_rays, num_samples)
-
-    with torch.no_grad():
-        indices_max, _ = torch.max(indices, dim=-1)
-        indices_max = torch.max(indices_max)
-        assert indices_max < weights.shape[-1] - 1
+    indices = torch.searchsorted(cdf, rand) - 1  # (num_rays, num_samples)
+    indices = torch.clamp(indices, min=0, max=num_samples-2)
 
     # sample the corresponding t
     delta_original_t = original_t[..., 1:] - original_t[..., :-1]
     start_t = torch.gather(original_t, dim=-1, index=indices)
     delta_t = torch.gather(delta_original_t, dim=-1, index=indices)
-    t = start_t + delta_t * torch.rand(delta_t.shape, device=delta_t.device)
+    rand = (rand - torch.gather(cdf, dim=-1, index=indices)) / \
+        torch.gather(pdf, dim=-1, index=indices)
+    t = start_t + delta_t * rand
+
+    # concatenate previous samples
+    # t = torch.cat([original_t, t], dim=-1)
+    # t, _ = torch.sort(t, dim=-1)  # make sure samples are ordered
 
     if torch.isnan(t).any():
         print('!!! nan in t')
@@ -307,12 +315,13 @@ def nerf_forward(
 
     # Then, perform weighted sample
     weighted_sample_positions, weighted_t = weighted_sample_rays(
-        rays_o, rays_d, weights, t, num_samples_fine)
+        rays_o, rays_d, weights[..., :-1], t, num_samples_fine)
+    weighted_sample_positions = weighted_sample_positions.detach()
 
     fine_rgb, weights = render_with_samples(
         rays_o, rays_d, batch_size, weighted_sample_positions, weighted_t, fine_network, position_encoding_network, direction_encoding_network)
 
-    return fine_rgb
+    return fine_rgb, coarse_rgb
 
 
 if __name__ == '__main__':
@@ -320,4 +329,4 @@ if __name__ == '__main__':
     # print(sample_rays(torch.tensor([0, 1, 0]),
     #       torch.tensor([1, 0, 1]), 2, 10, 10))
     weighted_sample_rays(None, None, torch.tensor(
-        [1, 5, 2, 0], dtype=torch.float32), torch.tensor([0, 1, 2, 3]), 80)
+        [1, 7, 2], dtype=torch.float32), torch.tensor([0, 1, 2, 3]), 20)

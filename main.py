@@ -11,6 +11,7 @@ from load_data import *
 
 # device init
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = "cpu"
 print(f'torch using device: {device}')
 
 
@@ -24,12 +25,12 @@ dim_fully_connected = 256
 cat_position_index = [4]
 near = 2
 far = 6
-num_samples_coarse = 8
-num_samples_fine = 16
+num_samples_coarse = 32
+num_samples_fine = 48
 
 # training parameters
 num_iters = 10000
-batch_size = 2**14
+batch_size = 2**12
 lr = 5e-4
 
 # networks
@@ -101,7 +102,7 @@ def train():
         rays_o, rays_d = get_rays(height, width, focal, transform_matrix)
 
         # predicted rgb
-        rgb: torch.Tensor = nerf_forward(
+        fine_rgb, coarse_rgb = nerf_forward(
             rays_o=rays_o,
             rays_d=rays_d,
             near=near,
@@ -114,7 +115,10 @@ def train():
             position_encoding_network=position_encoding_network,
             direction_encoding_network=direction_encoding_network)
 
-        loss = nn.functional.mse_loss(rgb, image.reshape((-1, 3)))
+        loss_fine = nn.functional.mse_loss(fine_rgb, image.reshape((-1, 3)))
+        loss_coarse = nn.functional.mse_loss(
+            coarse_rgb, image.reshape((-1, 3)))
+        loss = loss_fine + loss_coarse
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -131,7 +135,7 @@ def train():
             test_rays_o, test_rays_d = get_rays(
                 height, width, focal, test_transform_matrix)
 
-            test_rgb: torch.Tensor = nerf_forward(
+            test_fine_rgb, test_coarse_rgb = nerf_forward(
                 rays_o=test_rays_o,
                 rays_d=test_rays_d,
                 near=near,
@@ -144,10 +148,12 @@ def train():
                 position_encoding_network=position_encoding_network,
                 direction_encoding_network=direction_encoding_network)
 
-            fig, ax = plt.subplots(1, 2)
-            ax[0].imshow(test_rgb.reshape(
+            fig, ax = plt.subplots(1, 3)
+            ax[0].imshow(test_fine_rgb.reshape(
                 (height, width, 3)).detach().cpu().numpy())
-            ax[1].imshow(test_image.detach().cpu().numpy())
+            ax[1].imshow(test_coarse_rgb.reshape(
+                (height, width, 3)).detach().cpu().numpy())
+            ax[2].imshow(test_image.detach().cpu().numpy())
             plt.savefig('data/output.png')
 
         if i % 1000 == 0:
