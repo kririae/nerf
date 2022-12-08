@@ -144,7 +144,6 @@ def sample_rays(
 
 
 def visualize_samples(samples: torch.Tensor) -> None:
-    print(samples)
     y = torch.zeros_like(samples)
     plt.plot(samples.cpu().numpy(),
              1 + y.cpu().numpy(), 'b-o')
@@ -321,7 +320,7 @@ def nerf_forward(
     fine_rgb, weights = render_with_samples(
         rays_o, rays_d, batch_size, weighted_sample_positions, weighted_t, fine_network, position_encoding_network, direction_encoding_network)
 
-    return fine_rgb, coarse_rgb
+    return fine_rgb, coarse_rgb, weighted_t[0]
 
 
 if __name__ == '__main__':

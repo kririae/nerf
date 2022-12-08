@@ -25,8 +25,8 @@ dim_fully_connected = 256
 cat_position_index = [4]
 near = 2
 far = 6
-num_samples_coarse = 32
-num_samples_fine = 48
+num_samples_coarse = 8
+num_samples_fine = 8
 
 # training parameters
 num_iters = 10000
@@ -102,7 +102,7 @@ def train():
         rays_o, rays_d = get_rays(height, width, focal, transform_matrix)
 
         # predicted rgb
-        fine_rgb, coarse_rgb = nerf_forward(
+        fine_rgb, coarse_rgb, _ = nerf_forward(
             rays_o=rays_o,
             rays_d=rays_d,
             near=near,
@@ -135,7 +135,7 @@ def train():
             test_rays_o, test_rays_d = get_rays(
                 height, width, focal, test_transform_matrix)
 
-            test_fine_rgb, test_coarse_rgb = nerf_forward(
+            test_fine_rgb, test_coarse_rgb, test_weighted_t = nerf_forward(
                 rays_o=test_rays_o,
                 rays_d=test_rays_d,
                 near=near,
@@ -148,12 +148,27 @@ def train():
                 position_encoding_network=position_encoding_network,
                 direction_encoding_network=direction_encoding_network)
 
-            fig, ax = plt.subplots(1, 3)
-            ax[0].imshow(test_fine_rgb.reshape(
+            fig = plt.figure()
+            gs = fig.add_gridspec(2, 3)
+            ax1 = fig.add_subplot(gs[0, 0])
+            ax2 = fig.add_subplot(gs[0, 1])
+            ax3 = fig.add_subplot(gs[0, 2])
+            ax4 = fig.add_subplot(gs[1, :])
+
+            ax1.imshow(test_fine_rgb.reshape(
                 (height, width, 3)).detach().cpu().numpy())
-            ax[1].imshow(test_coarse_rgb.reshape(
+            ax1.set_title('fine_rgb')
+            ax2.imshow(test_coarse_rgb.reshape(
                 (height, width, 3)).detach().cpu().numpy())
-            ax[2].imshow(test_image.detach().cpu().numpy())
+            ax2.set_title('coarse_rgb')
+            ax3.imshow(test_image.detach().cpu().numpy())
+            ax3.set_title('ref_rgb')
+
+            y = torch.zeros_like(test_weighted_t)
+            ax4.plot(test_weighted_t.detach().cpu().numpy(),
+                     1 + y.cpu().numpy(), 'b-o')
+            ax4.set_ylim([0, 2])
+            ax4.grid(True)
             plt.savefig('data/output.png')
 
         if i % 1000 == 0:
